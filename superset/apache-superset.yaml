@@ -1,0 +1,236 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: apache-superset
+  labels:
+    env: prod
+spec:
+  type: NodePort
+  ports:
+    - port: 8088
+      targetPort: 8088
+  selector:
+    name: apache-superset
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apache-superset
+  labels:
+    env: prod
+spec:
+  selector:
+    matchLabels:
+      name: apache-superset
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        name: apache-superset
+        env: prod
+    spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: apache-superset
+          image: beanz.azurecr.io/superset:5
+          imagePullPolicy: "Always"
+          ports:
+            - containerPort: 8088
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1500Mi
+            requests:
+              cpu: 500m
+              memory: 1000Mi
+          env:
+            - name: ENABLE_DEV_MODE
+              value: "1"
+            - name: ADMIN_USERNAME
+              value: "admin"
+            - name: ADMIN_PASSWORD
+              value: "admin"
+            - name: ADMIN_EMAIL
+              value: "zaid@beanz.co"
+            - name: SUPERSET_CONFIG_PATH
+              value: "/app/superset_config.py"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: superset-config-volume
+              mountPath: /app/superset_config.py
+              subPath: "superset_config.py"
+              readOnly: true
+            - name: superset-managed-premium-disk
+              mountPath: /var/lib/superset/
+      volumes:
+        - name: superset-config-volume
+          configMap:
+            name: superset-config-files
+            items:
+              - key: superset_config.py
+                path: superset_config.py
+        - name: superset-managed-premium-disk
+          persistentVolumeClaim:
+            claimName: superset-managed-premium-disk
+      imagePullSecrets:
+        - name: regcred
+      restartPolicy: Always
+      tolerations:
+        - key: "kubernetes.azure.com/scalesetpriority"
+          operator: "Equal"
+          value: "spot"
+          effect: "NoSchedule"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: superset-managed-premium-disk
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: "managed-premium"
+  resources:
+    requests:
+      storage: 1Gi
+---
+# create a k8s configmap of a text file
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: superset-config-files
+data:
+  superset_config.py: |-
+    # Superset specific config
+    ROW_LIMIT = 5000
+
+    # Flask App Builder configuration
+    # Your App secret key will be used for securely signing the session cookie
+    # and encrypting sensitive information on the database
+    # Make sure you are changing this key for your deployment with a strong key.
+    # Alternatively you can set it with `SUPERSET_SECRET_KEY` environment variable.
+    # You MUST set this for production environments or the server will not refuse
+    # to start and you will see an error in the logs accordingly.
+    SECRET_KEY = 'A long and random secret key'
+
+    # The SQLAlchemy connection string to your database backend
+    # This connection defines the path to the database that stores your
+    # superset metadata (slices, connections, tables, dashboards, ...).
+    # Note that the connection information to connect to the datasources
+    # you want to explore are managed directly in the web UI
+    # The check_same_thread=false property ensures the sqlite client does not attempt
+    # to enforce single-threaded access, which may be problematic in some edge cases
+    SQLALCHEMY_DATABASE_URI = 'sqlite:////var/lib/superset/superset.db?check_same_thread=false'
+
+    # Flask-WTF flag for CSRF
+    WTF_CSRF_ENABLED = True
+    # Add endpoints that need to be exempt from CSRF protection
+    WTF_CSRF_EXEMPT_LIST = []
+    # A CSRF token that expires in 1 year
+    WTF_CSRF_TIME_LIMIT = 60 * 60 * 24 * 365
+
+    # Set this API key to enable Mapbox visualizations
+    # MAPBOX_API_KEY = 'map box key'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-bi
+  labels:
+    env: prod
+spec:
+  type: NodePort
+  ports:
+    - port: 3307
+      targetPort: 3307
+  selector:
+    name: mongo-bi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo-bi
+  labels:
+    env: prod
+spec:
+  selector:
+    matchLabels:
+      name: mongo-bi
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        name: mongo-bi
+        env: prod
+    spec:
+      containers:
+        - name: mongo-bi
+          image: beanz.azurecr.io/poc-ssm-mongo-bi:latest
+          imagePullPolicy: "Always"
+          ports:
+            - containerPort: 3307
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 3500Mi
+            requests:
+              cpu: 500m
+              memory: 1500Mi
+          env:
+            # - name: CONFIG_MONGO_BI_MONGO_USERNAME
+            #   value: "root"
+            # - name: CONFIG_MONGO_BI_MONGO_PASSWORD
+            #   value: "root"
+            - name: CONFIG_MONGO_BI_MONGO_URI
+              value: "mongodb://mongo-ro-0.mongo-ro.lakehouse-mongo.svc.cluster.local:27017/?replicaSet=rs0"
+            - name: CONFIG_MONGO_BI_VERY_VERBOSE
+              value: "1"
+            # - name: CONFIG_MONGO_BI_SCHEMA_MODE
+            #   value: "auto"
+            # - name: CONFIG_MONGO_BI_SCHEMA_SOURCE
+            #   value: "SchemaBi"
+            - name: CONFIG_MONGO_BI_SCHEMA_REFRESH_INTERVAL_SECS
+              value: "60000"
+            # - name: CONFIG_MONGO_BI_SSL_MODE
+            #   value: "allowSSL"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+      imagePullSecrets:
+        - name: regcred
+      restartPolicy: Always
+---
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   annotations:
+#     kubernetes.io/tls-acme: "true"
+#     kubernetes.io/ingress.class: nginx
+#     nginx.ingress.kubernetes.io/auth-response-headers: X-Auth-Request-User, X-Auth-Request-Email
+#     nginx.ingress.kubernetes.io/auth-signin: https://auth.beanz.ae/oauth2/start?rd=%2F$server_name$escaped_request_uri
+#     nginx.ingress.kubernetes.io/auth-url: https://auth.beanz.ae/oauth2/auth
+#   labels:
+#     name: bi-ingress
+#   name: bi-ingress
+# spec:
+#   rules:
+#     - host: bi.beanz.ae
+#       http:
+#         paths:
+#           - backend:
+#               service:
+#                 name: apache-superset
+#                 port:
+#                   number: 8088
+#             path: /
+#             pathType: ImplementationSpecific
+#   tls:
+#     - hosts:
+#         - bi.beanz.ae
+#       secretName: bi-tls
